@@ -209,6 +209,9 @@ public final class WindfallPlugin extends JavaPlugin {
             if (playerManager != null) {
                 playerManager.remove(uuid);
             }
+            if (worldGuardCompat != null) {
+                worldGuardCompat.invalidateCache(uuid);
+            }
         }
     }
 }

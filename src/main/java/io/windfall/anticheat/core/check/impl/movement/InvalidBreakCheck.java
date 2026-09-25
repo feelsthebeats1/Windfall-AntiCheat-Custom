@@ -8,6 +8,7 @@ import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientPl
 import io.windfall.anticheat.WindfallPlugin;
 import io.windfall.anticheat.core.check.Check;
 import io.windfall.anticheat.core.check.CheckData;
+import io.windfall.anticheat.core.check.CompatFlag;
 import io.windfall.anticheat.core.check.type.PacketCheck;
 import io.windfall.anticheat.core.player.WindfallPlayer;
 import org.bukkit.Material;
@@ -29,7 +30,13 @@ import org.bukkit.Material;
  * @see Check
  * @see PacketCheck
  */
-@CheckData(name = "Invalid Break A", stableKey = "windfall.movement.invalidbreak", decay = 0.02, setbackVl = 10)
+@CheckData(
+    name = "Invalid Break A",
+    stableKey = "windfall.movement.invalidbreak",
+    decay = 0.02,
+    setbackVl = 10,
+    compat = {CompatFlag.FOLIA_UNSAFE}
+)
 public class InvalidBreakCheck extends Check implements PacketCheck {
 
     /**
@@ -84,8 +91,7 @@ public class InvalidBreakCheck extends Check implements PacketCheck {
      * @param detail human-readable description of the violation
      */
     private void flagDetail(WindfallPlayer player, String detail) {
-        flag(player);
-        var logger = io.windfall.anticheat.WindfallPlugin.getInstance().getLogger();
-        logger.warning("[Invalid Break A] " + player.getName() + ": " + detail);
+        // Forward the reason to staff alerts / Discord instead of console-only logging.
+        flag(player, detail);
     }
 }

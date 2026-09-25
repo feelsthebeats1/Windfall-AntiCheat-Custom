@@ -3,7 +3,10 @@ package io.windfall.anticheat.core.player;
 import com.github.retrooper.packetevents.protocol.player.ClientVersion;
 import com.github.retrooper.packetevents.protocol.player.User;
 import io.windfall.anticheat.core.player.WindfallPlayer.Pose;
+import org.bukkit.block.Block;
 import org.bukkit.entity.Player;
+import org.bukkit.Material;
+import org.bukkit.World;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -294,6 +297,153 @@ class WindfallPlayerTest {
         WindfallPlayer player = createPlayer(767);
         assertEquals(UUID.fromString("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"), player.getUuid());
         assertEquals("TestPlayer", player.getName());
+    }
+
+    @Test
+    void cachedWorldName_isNullBeforeFirstRefresh() {
+        WindfallPlayer player = createPlayer(767);
+        assertNull(player.getCachedWorldName());
+    }
+
+    @Test
+    void updateCachedState_cachesWorldName() {
+        WindfallPlayer player = createPlayer(767);
+        World world = mock(World.class);
+        when(mockBukkitPlayer.getWorld()).thenReturn(world);
+        when(world.getName()).thenReturn("world_survival");
+
+        player.updateCachedState();
+
+        assertEquals("world_survival", player.getCachedWorldName());
+    }
+
+    @Test
+    void updateCachedState_cachesWorldNameEvenWithoutPluginInstance() {
+        WindfallPlayer player = createPlayer(767);
+        World world = mock(World.class);
+        when(mockBukkitPlayer.getWorld()).thenReturn(world);
+        when(world.getName()).thenReturn("world");
+
+        // getInstance() is unstubbed here, so it returns null. The world name is cached
+        // before the plugin lookup, so it must still be populated, and the region cache
+        // must degrade to false rather than throw on the tick thread.
+        player.updateCachedState();
+
+        assertEquals("world", player.getCachedWorldName());
+        assertFalse(player.isCachedBlockCheckRegionExempt());
+    }
+
+    @Test
+    void blockCheckRegionExempt_defaultsToFalse() {
+        WindfallPlayer player = createPlayer(767);
+        assertFalse(player.isCachedBlockCheckRegionExempt());
+    }
+
+    @Test
+    void updateCachedState_doesNotThrowWithoutWorld() {
+        WindfallPlayer player = createPlayer(767);
+        when(mockBukkitPlayer.getWorld()).thenReturn(null);
+
+        player.updateCachedState();
+
+        assertNull(player.getCachedWorldName());
+    }
+
+    @Test
+    void resolvedBlockType_isNullBeforeTheTickResolvesIt() {
+        WindfallPlayer player = createPlayer(767);
+        // Nothing has been resolved yet — FastBreak must see null and fall back.
+        assertNull(player.getResolvedBlockType(10, 64, 20));
+    }
+
+    @Test
+    void requestBlockType_doesNotTouchTheWorld() {
+        WindfallPlayer player = createPlayer(767);
+        player.requestBlockType(10, 64, 20);
+        // The enqueue must not call the world; only resolvePendingBlockLookups() may.
+        verify(mockBukkitPlayer, never()).getWorld();
+    }
+
+    @Test
+    void resolvePendingBlockLookups_publishesResolvedType() {
+        WindfallPlayer player = createPlayer(767);
+        World world = mock(World.class);
+        Block block = mock(Block.class);
+        when(mockBukkitPlayer.getWorld()).thenReturn(world);
+        when(world.getBlockAt(10, 64, 20)).thenReturn(block);
+        when(block.getType()).thenReturn(Material.STONE);
+
+        player.requestBlockType(10, 64, 20);
+        player.resolvePendingBlockLookups();
+
+        assertEquals(Material.STONE, player.getResolvedBlockType(10, 64, 20));
+    }
+
+    @Test
+    void resolvePendingBlockLookups_distinguishesCoordinates() {
+        WindfallPlayer player = createPlayer(767);
+        World world = mock(World.class);
+        // Build the blocks first: calling a stubbing helper inside when(...).thenReturn(...)
+        // leaves Mockito with unfinished stubbing.
+        Block dirt = blockOf(Material.DIRT);
+        Block obsidian = blockOf(Material.OBSIDIAN);
+        when(mockBukkitPlayer.getWorld()).thenReturn(world);
+        when(world.getBlockAt(1, 64, 1)).thenReturn(dirt);
+        when(world.getBlockAt(2, 64, 2)).thenReturn(obsidian);
+
+        player.requestBlockType(1, 64, 1);
+        player.requestBlockType(2, 64, 2);
+        player.resolvePendingBlockLookups();
+
+        assertEquals(Material.DIRT, player.getResolvedBlockType(1, 64, 1));
+        assertEquals(Material.OBSIDIAN, player.getResolvedBlockType(2, 64, 2));
+        assertNull(player.getResolvedBlockType(3, 64, 3));
+    }
+
+    @Test
+    void resolvePendingBlockLookups_handlesNegativeCoordinates() {
+        WindfallPlayer player = createPlayer(767);
+        World world = mock(World.class);
+        Block bedrock = blockOf(Material.BEDROCK);
+        when(mockBukkitPlayer.getWorld()).thenReturn(world);
+        when(world.getBlockAt(-134217728, 300, -134217728)).thenReturn(bedrock);
+
+        player.requestBlockType(-134217728, 300, -134217728);
+        player.resolvePendingBlockLookups();
+
+        assertEquals(Material.BEDROCK, player.getResolvedBlockType(-134217728, 300, -134217728));
+    }
+
+    @Test
+    void resolvePendingBlockLookups_fallsBackToAirWhenWorldThrows() {
+        WindfallPlayer player = createPlayer(767);
+        World world = mock(World.class);
+        when(mockBukkitPlayer.getWorld()).thenReturn(world);
+        when(world.getBlockAt(anyInt(), anyInt(), anyInt()))
+                .thenThrow(new IllegalStateException("chunk unloaded"));
+
+        player.requestBlockType(5, 5, 5);
+        player.resolvePendingBlockLookups();
+
+        // Must degrade, not throw on the tick thread.
+        assertEquals(Material.AIR, player.getResolvedBlockType(5, 5, 5));
+    }
+
+    @Test
+    void requestBlockType_dropsRequestsBeyondTheQueueLimit() {
+        WindfallPlayer player = createPlayer(767);
+        // Flood far past the 8-entry cap; nothing should blow up and the queue stays bounded.
+        for (int i = 0; i < 500; i++) {
+            player.requestBlockType(i, 64, i);
+        }
+        player.resolvePendingBlockLookups();
+        assertNull(player.getResolvedBlockType(400, 64, 400));
+    }
+
+    private static Block blockOf(Material material) {
+        Block block = mock(Block.class);
+        when(block.getType()).thenReturn(material);
+        return block;
     }
 
     @Test

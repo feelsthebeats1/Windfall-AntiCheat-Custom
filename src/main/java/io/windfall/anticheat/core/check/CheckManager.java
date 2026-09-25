@@ -31,6 +31,7 @@ import io.windfall.anticheat.core.check.impl.movement.NoSlowCheck;
 import io.windfall.anticheat.core.check.impl.movement.MotionCheck;
 import io.windfall.anticheat.core.check.impl.movement.FastBreakCheck;
 import io.windfall.anticheat.core.check.impl.movement.FarBreakCheck;
+import io.windfall.anticheat.core.check.impl.movement.NukerCheck;
 import io.windfall.anticheat.core.check.impl.movement.FarPlaceCheck;
 import io.windfall.anticheat.core.check.impl.movement.InvalidBreakCheck;
 import io.windfall.anticheat.core.check.impl.movement.InvalidPlaceCheck;
@@ -38,7 +39,6 @@ import io.windfall.anticheat.core.check.impl.movement.NoSwingCheck;
 import io.windfall.anticheat.core.check.impl.movement.RotationBreakCheck;
 import io.windfall.anticheat.core.check.impl.movement.AirLiquidBreakCheck;
 import io.windfall.anticheat.core.check.impl.movement.WrongBreakCheck;
-import io.windfall.anticheat.core.check.impl.movement.PositionBreakCheck;
 import io.windfall.anticheat.core.check.impl.movement.MultiBreakCheck;
 import io.windfall.anticheat.core.check.impl.movement.AirLiquidPlaceCheck;
 import io.windfall.anticheat.core.check.impl.movement.RotationPlaceCheck;
@@ -80,7 +80,7 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * <p>Responsibilities:
  * <ul>
- *   <li>Instantiates all 52 checks and filters incompatible ones at startup</li>
+ *   <li>Instantiates all 54 checks and filters incompatible ones at startup</li>
  *   <li>Dispatches packets to enabled checks via {@link #onPacketReceive} / {@link #onPacketSend}</li>
  *   <li>Runs per-tick reward (VL/buffer decay) for all online players</li>
  *   <li>Provides lookup by stableKey for commands and GUI</li>
@@ -202,6 +202,7 @@ public class CheckManager {
         allChecks.add(new MotionCheck());
         allChecks.add(new IllegalMoveCheck());
         allChecks.add(new FastBreakCheck());
+        allChecks.add(new NukerCheck());
         allChecks.add(new FarBreakCheck());
         allChecks.add(new FarPlaceCheck());
         allChecks.add(new InvalidBreakCheck());
@@ -210,7 +211,6 @@ public class CheckManager {
         allChecks.add(new RotationBreakCheck());
         allChecks.add(new AirLiquidBreakCheck());
         allChecks.add(new WrongBreakCheck());
-        allChecks.add(new PositionBreakCheck());
         allChecks.add(new MultiBreakCheck());
         allChecks.add(new AirLiquidPlaceCheck());
         allChecks.add(new RotationPlaceCheck());
@@ -280,6 +280,11 @@ public class CheckManager {
         }
         if (check.isDisableOnPurpur() && serverFork.isPurpur()) {
             return "fork: disabled on Purpur";
+        }
+        // Checks that read synchronous world/entity state are unsafe from Folia region
+        // threads, so they are skipped entirely on Folia rather than risking races.
+        if (check.hasCompatFlag(CompatFlag.FOLIA_UNSAFE) && serverFork.isFolia()) {
+            return "fork: Folia-unsafe check skipped on Folia";
         }
 
         // Layer 3: Plugin detection
@@ -351,6 +356,8 @@ public class CheckManager {
             player.resetTickState();
             player.getActionData().tick();
             player.updateCachedState();
+            // Resolve block lookups requested by Netty-thread checks (FastBreak and friends).
+            player.resolvePendingBlockLookups();
 
             // Process deferred block changes based on player latency
             latencyCompensator.processDeferredChanges(player.getUuid(), player);
@@ -388,12 +395,19 @@ public class CheckManager {
         }
     }
 
-    /** Reloads config and updates enabled/punishable state for all checks */
+    /** Reloads all runtime check settings from the typed config. */
     public void reloadChecks() {
-        plugin.getWindfallConfig().reload();
+        io.windfall.anticheat.core.config.WindfallConfig cfg = plugin.getWindfallConfig();
+        cfg.reload();
         for (Check check : checks) {
-            check.setEnabled(plugin.getWindfallConfig().isCheckEnabled(check.getStableKey()));
-            check.setPunishable(plugin.getWindfallConfig().isCheckPunishable(check.getStableKey()));
+            String key = check.getStableKey();
+            check.setEnabled(cfg.isCheckEnabled(key));
+            check.setMaxVl(cfg.getCheckMaxVl(key));
+            check.setSetbackVl(cfg.hasCheckOverride(key, "setback-vl")
+                    ? cfg.getCheckSetbackVl(key) : check.annotationSetbackVl);
+            check.setDecay(cfg.hasCheckOverride(key, "decay")
+                    ? cfg.getCheckDecay(key) : check.annotationDecay);
+            check.setPunishable(cfg.isCheckPunishable(key));
         }
     }
 

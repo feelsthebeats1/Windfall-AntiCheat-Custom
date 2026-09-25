@@ -4,6 +4,7 @@ import com.github.retrooper.packetevents.event.PacketReceiveEvent;
 import com.github.retrooper.packetevents.event.PacketSendEvent;
 import com.github.retrooper.packetevents.protocol.packettype.PacketTypeCommon;
 import com.github.retrooper.packetevents.protocol.player.DiggingAction;
+import com.github.retrooper.packetevents.protocol.world.states.WrappedBlockState;
 import com.github.retrooper.packetevents.util.Vector3i;
 import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientPlayerDigging;
 import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientPlayerBlockPlacement;
@@ -195,8 +196,11 @@ public class ActionData {
             if (blockPos == null) return;
 
             int blockId = wrapper.getBlockId();
+            WrappedBlockState blockState = wrapper.getBlockState();
+            String stateType = blockState != null && blockState.getType() != null
+                    ? blockState.getType().getName() : "";
 
-            if (isPistonBlock(blockId)) {
+            if (isPistonBlock(blockId) || isPistonMaterialName(stateType)) {
                 sincePistonUpdateTicks = 0;
             }
 
@@ -228,12 +232,9 @@ public class ActionData {
     }
 
     /**
-     * Returns true if the given Material is a piston-type block.
-     * Works on all MC versions (1.7-26.2+).
+     * Returns true if the given normalized material name is a piston-type block.
      */
-    private static boolean isPistonMaterial(Material material) {
-        if (material == null) return false;
-        String name = material.name();
-        return name.contains("PISTON");
+    private static boolean isPistonMaterialName(String materialName) {
+        return materialName != null && materialName.contains("PISTON");
     }
 }

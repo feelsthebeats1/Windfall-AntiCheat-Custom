@@ -3,6 +3,8 @@
 # === Alerts ===
 alerts:
   enabled: true
+  # Alert-only: checks still flag/alert, but never punish, reset VL, or setback teleport
+  alert-only: false
   prefix: "&8[&bWindfall&8] &7"
   staff-permission: "windfall.alerts"
   broadcast-to-all-staff: true
@@ -86,6 +88,13 @@ compatibility:
     # Extra ticks of tolerance for timing-based checks
     packet-delay-tolerance: 1
 
+# === Block-check exemptions ===
+# Skips FastBreak/Nuker detection in listed worlds, and optionally in WorldGuard regions.
+block-checks:
+  exempt-enabled: false
+  exempt-in-worldguard-regions: false
+  exempt-worlds: []
+
 # === Prometheus Metrics ===
 # Exposes anti-cheat telemetry for Grafana/Prometheus monitoring.
 # Requires a separate Prometheus server scraping this endpoint.
@@ -107,77 +116,89 @@ checks:
     punishable: true
 
   # Combat
-  windfall.combat.aim:
-    enabled: true
-    max-vl: 80
-    setback-vl: 10
-    punishable: true
-  windfall.combat.reach:
-    enabled: true
-    max-vl: 80
-    setback-vl: 10
-    punishable: true
-  windfall.combat.criticals:
-    enabled: true
-    max-vl: 80
-    setback-vl: 10
-    punishable: true
-  windfall.combat.killaura:
-    enabled: true
-    max-vl: 100
-    setback-vl: 25
-    punishable: true
+  windfall.combat.aim: { enabled: true, max-vl: 80, setback-vl: 10, punishable: true }
+  windfall.combat.autoclicker: { enabled: true, punishable: true }
+  windfall.combat.backtrack: { enabled: true, punishable: true }
+  windfall.combat.criticals: { enabled: true, max-vl: 80, setback-vl: 10, punishable: true }
+  windfall.combat.fastheal: { enabled: true, punishable: true }
+  windfall.combat.hitboxes: { enabled: true, punishable: true }
+  windfall.combat.killaura: { enabled: true, max-vl: 100, setback-vl: 25, punishable: true }
+  windfall.combat.macro: { enabled: true, punishable: true }
+  windfall.combat.multiinteract: { enabled: true, punishable: true }
+  windfall.combat.reach: { enabled: true, max-vl: 80, setback-vl: 10, punishable: true }
+  windfall.combat.selfinteract: { enabled: true, punishable: true }
+  windfall.combat.swordblock: { enabled: true, punishable: true }
 
   # Movement
-  windfall.movement.speed:
+  windfall.movement.airliquidbreak: { enabled: true, punishable: true }
+  windfall.movement.airliquidplace: { enabled: true, punishable: true }
+  windfall.movement.baritone: { enabled: true, punishable: true }
+  windfall.movement.elytra: { enabled: true, punishable: true }
+  windfall.movement.farbreak: { enabled: true, punishable: true }
+  windfall.movement.farplace: { enabled: true, punishable: true }
+  windfall.movement.fastbreak:
     enabled: true
-    max-vl: 100
-    setback-vl: 20
     punishable: true
-  windfall.movement.fly:
+    detection:
+      time-multiplier: 0.85
+      minimum-flag-buffer: 3.0
+      network-grace-ms: 100
+      minimum-check-ms: 50
+      buffer-increase: 1.0
+      buffer-decrease: 1.0
+      account-for-tools: true
+      account-for-enchantments: true
+      # Optional custom expected break time per material, in seconds
+      block-time-overrides: {}
+      #        STONE: 1.5
+      #        OBSIDIAN: 45.0
+  windfall.movement.nuker:
     enabled: true
-    max-vl: 100
-    setback-vl: 15
-    punishable: true
-  windfall.movement.velocity:
-    enabled: true
-    max-vl: 100
-    setback-vl: 30
-    punishable: true
-  windfall.movement.timer:
-    enabled: true
-    max-vl: 100
-    setback-vl: 25
-    punishable: true
-  windfall.movement.nofall:
-    enabled: true
-    max-vl: 80
-    setback-vl: 15
     punishable: false
-  windfall.movement.step:
-    enabled: true
-    max-vl: 80
-    setback-vl: 15
-    punishable: true
-  windfall.movement.scaffold:
-    enabled: true
-    max-vl: 100
-    setback-vl: 30
-    punishable: true
+    detection:
+      window-ms: 1000
+      maximum-blocks: 12
+      suspicious-blocks: 7
+      minimum-fast-blocks: 3
+      maximum-same-tick: 1
+      minimum-target-switch-distance: 2.0
+      maximum-target-switch-distance: 7.0
+      minimum-flag-buffer: 3.0
+  windfall.movement.fly: { enabled: true, max-vl: 100, setback-vl: 15, punishable: true }
+  windfall.movement.groundspoof: { enabled: true, punishable: true }
+  windfall.movement.illegalmove: { enabled: true, punishable: true }
+  windfall.movement.invalidbreak: { enabled: true, punishable: true }
+  windfall.movement.invalidplace: { enabled: true, punishable: true }
+  windfall.movement.motion: { enabled: true, punishable: true }
+  windfall.movement.multibreak: { enabled: true, punishable: true }
+  windfall.movement.multiplace: { enabled: true, punishable: true }
+  windfall.movement.nofall: { enabled: true, max-vl: 80, setback-vl: 15, punishable: false }
+  windfall.movement.noslow: { enabled: true, punishable: true }
+  windfall.movement.noswing: { enabled: true, punishable: true }
+  windfall.movement.phase: { enabled: true, punishable: true }
+  windfall.movement.positionplace: { enabled: true, punishable: true }
+  windfall.movement.rotationbreak: { enabled: true, punishable: true }
+  windfall.movement.rotationplace: { enabled: true, punishable: true }
+  windfall.movement.scaffold: { enabled: true, max-vl: 100, setback-vl: 30, punishable: true }
+  windfall.movement.simulation: { enabled: true, punishable: true }
+  windfall.movement.speed: { enabled: true, max-vl: 100, setback-vl: 20, punishable: true }
+  windfall.movement.step: { enabled: true, max-vl: 80, setback-vl: 15, punishable: true }
+  windfall.movement.timer: { enabled: true, max-vl: 100, setback-vl: 25, punishable: true }
+  windfall.movement.velocity: { enabled: true, max-vl: 100, setback-vl: 30, punishable: true }
+  windfall.movement.wrongbreak: { enabled: true, punishable: true }
 
   # Packet
-  windfall.packet.bad:
-    enabled: true
-    max-vl: 50
-    setback-vl: 5
-    punishable: false
-  windfall.packet.cheststealer:
-    enabled: true
-    max-vl: 60
-    setback-vl: 15
-    punishable: true
-  windfall.packet.creative:
-    enabled: true
-    max-vl: 50
-    setback-vl: 5
-    punishable: true
+  windfall.packet.bad: { enabled: true, max-vl: 50, setback-vl: 5, punishable: false }
+  windfall.packet.brand: { enabled: true, punishable: true }
+  windfall.packet.chat: { enabled: true, punishable: true }
+  windfall.packet.cheststealer: { enabled: true, max-vl: 60, setback-vl: 15, punishable: true }
+  windfall.packet.creative: { enabled: true, max-vl: 50, setback-vl: 5, punishable: true }
+  windfall.packet.crash: { enabled: true, punishable: true }
+  windfall.packet.exploit: { enabled: true, punishable: true }
+  windfall.packet.order: { enabled: true, punishable: true }
+  windfall.packet.sprint: { enabled: true, punishable: true }
+  windfall.packet.transaction: { enabled: true, punishable: true }
+  windfall.packet.vehicle: { enabled: true, punishable: true }
+
+  # Inventory
+  windfall.inventory.inventory: { enabled: true, punishable: true }

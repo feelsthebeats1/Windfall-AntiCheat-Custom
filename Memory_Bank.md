@@ -134,8 +134,8 @@ WindfallPlugin
 | NoFallCheck | NoFall A | windfall.movement.nofall | No-fall damage bypass |
 | NoSlowCheck | NoSlow A | windfall.movement.noslow | Bypassing item-use slowdown |
 | NoSwingCheck | No Swing A | windfall.movement.noswing | Missing arm-swing animation |
+| NukerCheck | Nuker A | windfall.movement.nuker | Throughput + fast-break + target-switch evidence |
 | PhaseCheck | Phase A | windfall.movement.phase | Wall noclipping |
-| PositionBreakCheck | Position Break | windfall.movement.positionbreak | Squared-distance break check |
 | PositionPlaceCheck | Position Place | windfall.movement.positionplace | Squared-distance place check |
 | RotationBreakCheck | Rotation Break A | windfall.movement.rotationbreak | Rotation change during break >45° |
 | RotationPlaceCheck | Rotation Place | windfall.movement.rotationplace | Rotation not facing placed block |
@@ -450,7 +450,7 @@ Min severity to flag: default 60 (configurable)
 8. TransactionManager / PingPongManager / LatencyCompensator / SimulationEngine
 9. GeyserManager / GeysersTracker
 10. SeverityManager / PunishmentEngine
-11. CheckManager (registers 52 checks)
+11. CheckManager (registers 54 checks)
 12. CommandManager / AlertManager / ChecklistGUI
 13. WorldGuard integration (conditional)
 14. Register API, PacketListener, PlayerQuitListener
@@ -491,7 +491,7 @@ core/
   check/Check.java, CheckData.java, CheckManager.java, CompatFlag.java
   check/type/PacketCheck.java
   check/impl/combat/ (Aim, Autoclicker, Backtrack, Criticals, FastHeal, Hitboxes, KillAura, Macro, MultiInteract, Reach, SelfInteract, SwordBlock)
-  check/impl/movement/ (AirLiquidBreak, AirLiquidPlace, Baritone, Elytra, FarBreak, FarPlace, FastBreak, Flight, GroundSpoof, InvalidBreak, InvalidPlace, Motion, MultiBreak, MultiPlace, NoFall, NoSlow, NoSwing, Phase, PositionBreak, PositionPlace, RotationBreak, RotationPlace, Scaffold, Simulation, Speed, Step, Timer, Velocity, WrongBreak)
+  check/impl/movement/ (AirLiquidBreak, AirLiquidPlace, Baritone, Elytra, FarBreak, FarPlace, FastBreak, Flight, GroundSpoof, InvalidBreak, InvalidPlace, Motion, MultiBreak, MultiPlace, NoFall, NoSlow, NoSwing, Phase, PositionPlace, RotationBreak, RotationPlace, Scaffold, Simulation, Speed, Step, Timer, Velocity, WrongBreak)
   check/impl/packet/ (BadPackets, Chat, ChestStealer, ClientBrand, Crash, Creative, Exploit, PacketOrder, Sprint, Transaction, Vehicle)
   check/impl/inventory/InventoryCheck.java
   command/CommandManager.java, ChecklistGUI.java

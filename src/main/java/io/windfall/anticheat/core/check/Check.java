@@ -57,6 +57,9 @@ public abstract class Check {
     /** Maximum server protocol version to enable this check */
     protected volatile int maxVersion;
     protected final CompatFlag[] compatFlags;
+    /** Annotation defaults retained so reload can distinguish missing config from explicit overrides. */
+    protected final double annotationDecay;
+    protected final int annotationSetbackVl;
     /** Buffer multiplier when RELAX_ON_MISMATCH is active — 1.0 = no relaxation */
     protected final double relaxMultiplier;
     protected final boolean disableOnFolia;
@@ -79,6 +82,8 @@ public abstract class Check {
         this.stableKey = data.stableKey();
         this.decay = data.decay();
         this.setbackVl = data.setbackVl();
+        this.annotationDecay = data.decay();
+        this.annotationSetbackVl = data.setbackVl();
         this.minVersion = data.minVersion();
         this.maxVersion = data.maxVersion();
         this.compatFlags = data.compat();
@@ -90,6 +95,15 @@ public abstract class Check {
         this.enabled = cfg.isCheckEnabled(stableKey);
         this.maxVl = cfg.getCheckMaxVl(stableKey);
         this.punishable = cfg.isCheckPunishable(stableKey);
+
+        // Per-check setback/decay entries are optional. Keep the annotation as the
+        // default while still allowing explicit config overrides.
+        if (cfg.hasCheckOverride(stableKey, "setback-vl")) {
+            this.setbackVl = cfg.getCheckSetbackVl(stableKey);
+        }
+        if (cfg.hasCheckOverride(stableKey, "decay")) {
+            this.decay = cfg.getCheckDecay(stableKey);
+        }
     }
 
     /**
@@ -128,6 +142,17 @@ public abstract class Check {
      * @param player the flagged player
      */
     public void flag(WindfallPlayer player) {
+        flag(player, null);
+    }
+
+    /**
+     * Flags with a human-readable detection detail that is forwarded to staff alerts
+     * and the Discord webhook. Passing {@code null} keeps the legacy "VL=n" message.
+     *
+     * @param player the flagged player
+     * @param detail detection context, e.g. "block=STONE expected=1500ms actual=120ms"
+     */
+    public void flag(WindfallPlayer player, String detail) {
         if (!enabled) return;
 
         WindfallPlugin plugin = WindfallPlugin.getInstance();
@@ -153,18 +178,20 @@ public abstract class Check {
         }
 
         AlertManager alertManager = plugin.getAlertManager();
+        String alertDetail = (detail == null || detail.isEmpty()) ? "VL=" + vl : "VL=" + vl + " — " + detail;
         if (alertManager != null && player.isAlertsEnabled() && vl > 0) {
-            alertManager.sendAlert(player, this, "VL=" + vl);
+            alertManager.sendAlert(player, this, alertDetail);
         } else if (plugin.getWindfallConfig().isVerboseEnabled()) {
-            plugin.getLogger().warning("[" + name + "] " + player.getName() + " VL=" + vl);
+            plugin.getLogger().warning("[" + name + "] " + player.getName() + " " + alertDetail);
         }
 
-        if (punishable && plugin.getPunishmentEngine() != null) {
+        boolean alertOnly = plugin.getWindfallConfig().isAlertOnlyMode();
+        if (punishable && !alertOnly && plugin.getPunishmentEngine() != null) {
             plugin.getPunishmentEngine().evaluate(player);
         }
 
-        // Reset before setback to prevent instant re-punishment on next flag
-        if (vl >= setbackVl) {
+        // Alert-only mode never resets VL or performs a setback teleport.
+        if (!alertOnly && vl >= setbackVl) {
             player.getViolationLevels().put(stableKey, 0);
             performSetback(player);
         }
@@ -195,13 +222,16 @@ public abstract class Check {
             plugin.getLogger().warning("[" + name + "] " + player.getName() + " VL=" + vl + " (SETBACK)");
         }
 
-        if (punishable && plugin.getPunishmentEngine() != null) {
+        boolean alertOnly = plugin.getWindfallConfig().isAlertOnlyMode();
+        if (punishable && !alertOnly && plugin.getPunishmentEngine() != null) {
             plugin.getPunishmentEngine().evaluate(player);
         }
 
-        performSetback(player);
+        if (!alertOnly) {
+            performSetback(player);
+        }
 
-        if (vl >= setbackVl) {
+        if (!alertOnly && vl >= setbackVl) {
             player.getViolationLevels().put(stableKey, 0);
         }
     }
@@ -280,6 +310,9 @@ public abstract class Check {
     public String getStableKey() { return stableKey; }
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
+    public void setMaxVl(int maxVl) { this.maxVl = Math.max(1, maxVl); }
+    public void setSetbackVl(int setbackVl) { this.setbackVl = Math.max(1, setbackVl); }
+    public void setDecay(double decay) { this.decay = Math.max(0.0, decay); }
     public boolean isPunishable() { return punishable; }
     public void setPunishable(boolean punishable) { this.punishable = punishable; }
     public double getDecay() { return decay; }

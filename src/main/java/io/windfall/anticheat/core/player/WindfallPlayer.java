@@ -188,6 +188,11 @@ public class WindfallPlayer {
     private volatile boolean cachedIsFallFlying;
     private volatile boolean cachedHasRiptide;
 
+    // === Cached held-item state — populated on the main thread, read from Netty packet threads ===
+    private volatile org.bukkit.Material cachedToolType;
+    private volatile double cachedToolSpeed = 1.0;
+    private volatile int cachedEfficiencyLevel;
+
     /**
      * Creates a WindfallPlayer from a Bukkit Player and PacketEvents User.
      * Called once at LOGIN_SUCCESS from {@link io.windfall.anticheat.core.network.PacketListener}.
@@ -543,6 +548,168 @@ public class WindfallPlayer {
             this.cachedHasRiptide = false;
             this.cachedIsFallFlying = false;
         }
+        updateCachedTool();
+        updateCachedBlockCheckExemption();
+    }
+
+    /** Cached world name from the last main-thread refresh. */
+    private volatile String cachedWorldName;
+
+    /** Cached WorldGuard region membership for the block-check exemption path. */
+    private volatile boolean cachedBlockCheckRegionExempt;
+
+    /**
+     * Cached world name, refreshed on the tick thread. Null before the first refresh.
+     * Packet-thread checks must use this instead of {@code Player#getWorld()}.
+     */
+    public String getCachedWorldName() { return cachedWorldName; }
+
+    /**
+     * Cached WorldGuard region membership, refreshed on the tick thread via
+     * {@link WorldGuardCompat#isInRegionCached}. False when the region exemption is
+     * disabled or WorldGuard is absent.
+     */
+    public boolean isCachedBlockCheckRegionExempt() { return cachedBlockCheckRegionExempt; }
+
+    /**
+     * Caches the block-check exemption inputs on the main thread so
+     * {@link io.windfall.anticheat.core.check.impl.movement.BlockCheckExempt} never touches
+     * the world or WorldGuard from a packet thread.
+     */
+    private void updateCachedBlockCheckExemption() {
+        cachedWorldName = null;
+        cachedBlockCheckRegionExempt = false;
+        try {
+            cachedWorldName = player.getWorld().getName();
+            io.windfall.anticheat.core.config.WindfallConfig cfg =
+                    io.windfall.anticheat.WindfallPlugin.getInstance().getWindfallConfig();
+            if (cfg != null && cfg.isBlockCheckRegionExempt()) {
+                io.windfall.anticheat.core.compat.WorldGuardCompat wg =
+                        io.windfall.anticheat.WindfallPlugin.getInstance().getWorldGuardCompat();
+                // isInRegionCached is itself TTL-cached, so a per-tick call only performs
+                // the reflective WorldGuard query once per CACHE_TTL_MS.
+                if (wg != null) cachedBlockCheckRegionExempt = wg.isInRegionCached(player);
+            }
+        } catch (Throwable ignored) {
+            // No plugin instance yet, or world access denied — fall back to "not exempt".
+        }
+    }
+
+    // === DEFERRED BLOCK LOOKUPS ===
+    // Netty-thread checks must not call World#getBlockAt. They submit coordinates here and
+    // read the result on a later tick from {@link #getResolvedBlockType(int, int, int)}.
+
+    /**
+     * Maximum outstanding lookups per player. A client spamming dig packets can enqueue
+     * faster than the tick drains, so the queue is bounded and excess requests are dropped
+     * rather than growing without limit.
+     */
+    private static final int MAX_PENDING_BLOCK_LOOKUPS = 8;
+
+    /** Pending coordinate requests, filled from Netty, drained on the tick thread. */
+    private final java.util.concurrent.ConcurrentLinkedQueue<long[]> pendingBlockLookups =
+        new java.util.concurrent.ConcurrentLinkedQueue<>();
+
+    /** Resolved block types for the current tick — published as an immutable snapshot. */
+    private volatile java.util.Map<Long, org.bukkit.Material> resolvedBlocks =
+        java.util.Collections.emptyMap();
+
+    /** Packs block coordinates into a single long key (X/Z: 26 bits, Y: 12 bits). */
+    private static long blockKey(int x, int y, int z) {
+        return ((long) (x & 0x3FFFFFF) << 38) | ((long) (z & 0x3FFFFFF) << 12) | (y & 0xFFF);
+    }
+
+    /**
+     * Queues a block-type lookup for resolution on the next tick. Safe to call from the
+     * Netty thread. Requests beyond {@link #MAX_PENDING_BLOCK_LOOKUPS} are dropped.
+     */
+    public void requestBlockType(int x, int y, int z) {
+        if (pendingBlockLookups.size() >= MAX_PENDING_BLOCK_LOOKUPS) return;
+        pendingBlockLookups.offer(new long[] { x, y, z });
+    }
+
+    /**
+     * Resolves every queued block lookup. Main-thread only — this is the sole place that
+     * touches the world from the block-lookup path. Called from the tick loop.
+     */
+    public void resolvePendingBlockLookups() {
+        java.util.Map<Long, org.bukkit.Material> resolved = null;
+        long[] request;
+        while ((request = pendingBlockLookups.poll()) != null) {
+            if (resolved == null) resolved = new java.util.HashMap<>(MAX_PENDING_BLOCK_LOOKUPS);
+            // int widened to long on enqueue — narrowing back is exact.
+            int x = (int) request[0];
+            int y = (int) request[1];
+            int z = (int) request[2];
+            org.bukkit.Material type = org.bukkit.Material.AIR;
+            try {
+                type = player.getWorld().getBlockAt(x, y, z).getType();
+            } catch (Throwable ignored) {
+                // Chunk unloaded / world access denied — keep the AIR fallback.
+            }
+            resolved.put(blockKey(x, y, z), type);
+        }
+        // Publish a fresh immutable snapshot so Netty readers never see a mutating map.
+        if (resolved != null) {
+            resolvedBlocks = java.util.Collections.unmodifiableMap(resolved);
+        }
+    }
+
+    /**
+     * Returns the block type resolved during the most recent tick, or {@code null} if this
+     * position was not looked up. Safe to call from the Netty thread.
+     */
+    public org.bukkit.Material getResolvedBlockType(int x, int y, int z) {
+        return resolvedBlocks.get(blockKey(x, y, z));
+    }
+
+    /**
+     * Snapshots the held item on the main thread so packet-thread checks never touch
+     * the Bukkit inventory API. Refreshed once per tick by {@link #updateCachedState()}.
+     */
+    private void updateCachedTool() {
+        this.cachedToolType = null;
+        this.cachedToolSpeed = 1.0;
+        this.cachedEfficiencyLevel = 0;
+        try {
+            org.bukkit.inventory.ItemStack item = player.getInventory().getItemInHand();
+            if (item == null || item.getType() == org.bukkit.Material.AIR) return;
+            this.cachedToolType = item.getType();
+            this.cachedToolSpeed = computeToolSpeed(item.getType().name());
+            this.cachedEfficiencyLevel = readEfficiencyLevel(item);
+        } catch (Throwable ignored) {
+            // Conservative defaults keep FastBreak functional on legacy/odd forks.
+        }
+    }
+
+    private static double computeToolSpeed(String name) {
+        if (name.equals("NETHERITE_PICKAXE") || name.equals("NETHERITE_AXE")
+                || name.equals("NETHERITE_SHOVEL") || name.equals("NETHERITE_HOE")) return 9.0;
+        if (name.contains("DIAMOND_")) return 8.0;
+        if (name.contains("IRON_")) return 6.0;
+        if (name.contains("STONE_")) return 4.0;
+        if (name.contains("GOLDEN_")) return 4.0;
+        if (name.contains("WOODEN_")) return 3.0;
+        if (name.contains("SHEARS")) return 6.0;
+        return 1.0;
+    }
+
+    /** Spigot 1.8 ItemMeta lacks a typed enchantment accessor, so use reflection. */
+    private static int readEfficiencyLevel(org.bukkit.inventory.ItemStack item) {
+        try {
+            if (!item.hasItemMeta()) return 0;
+            org.bukkit.inventory.meta.ItemMeta meta = item.getItemMeta();
+            if (meta == null) return 0;
+            org.bukkit.enchantments.Enchantment efficiency =
+                    org.bukkit.enchantments.Enchantment.getByName("EFFICIENCY");
+            if (efficiency == null) return 0;
+            java.lang.reflect.Method method = meta.getClass().getMethod(
+                    "getEnchantmentLevel", org.bukkit.enchantments.Enchantment.class);
+            Object level = method.invoke(meta, efficiency);
+            return level instanceof Number ? ((Number) level).intValue() : 0;
+        } catch (Throwable ignored) {
+            return 0;
+        }
     }
 
     private double computePotionMultiplier(String nameContains, double perLevel, int maxLevel) {
@@ -582,4 +749,11 @@ public class WindfallPlayer {
     public double getCachedLevitationAmplifier() { return cachedLevitationAmplifier; }
     public boolean isCachedIsFallFlying() { return cachedIsFallFlying; }
     public boolean isCachedHasRiptide() { return cachedHasRiptide; }
+
+    /** Held item material snapshot from the last main-thread refresh (null when empty). */
+    public org.bukkit.Material getCachedToolType() { return cachedToolType; }
+    /** Held item mining speed snapshot from the last main-thread refresh. */
+    public double getCachedToolSpeed() { return cachedToolSpeed; }
+    /** Held item Efficiency level snapshot from the last main-thread refresh. */
+    public int getCachedEfficiencyLevel() { return cachedEfficiencyLevel; }
 }

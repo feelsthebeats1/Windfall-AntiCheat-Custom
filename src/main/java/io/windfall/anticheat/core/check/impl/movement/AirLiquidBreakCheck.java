@@ -4,6 +4,7 @@ import com.github.retrooper.packetevents.event.PacketReceiveEvent;
 import com.github.retrooper.packetevents.event.PacketSendEvent;
 import com.github.retrooper.packetevents.protocol.packettype.PacketType;
 import com.github.retrooper.packetevents.protocol.player.DiggingAction;
+import io.windfall.anticheat.core.check.CompatFlag;
 import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientPlayerDigging;
 import io.windfall.anticheat.core.check.Check;
 import io.windfall.anticheat.core.check.CheckData;
@@ -34,7 +35,13 @@ import org.bukkit.block.BlockFace;
  * @see AirLiquidPlaceCheck — companion check for placing blocks while in air/liquid
  * @see WrongBreakCheck — companion check for spatial consistency of break actions
  */
-@CheckData(name = "Air Liquid Break", stableKey = "windfall.movement.airliquidbreak", decay = 0.02, setbackVl = 10)
+@CheckData(
+    name = "Air Liquid Break",
+    stableKey = "windfall.movement.airliquidbreak",
+    decay = 0.02,
+    setbackVl = 10,
+    compat = {CompatFlag.FOLIA_UNSAFE}
+)
 public class AirLiquidBreakCheck extends Check implements PacketCheck {
 
     /** Buffer must exceed this value before a flag is raised. */

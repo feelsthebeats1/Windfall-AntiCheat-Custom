@@ -139,40 +139,19 @@ public class WindfallConfig {
         config.addDefault("checks.default.decay", 0.02);
         config.addDefault("checks.default.punishable", true);
 
-        // Per-check overrides — only need to add entries here when adding new checks
-        String[] allChecks = {
-            "windfall.movement.speed", "windfall.movement.fly",
-            "windfall.movement.velocity", "windfall.movement.timer",
-            "windfall.movement.nofall", "windfall.movement.step",
-            "windfall.movement.scaffold", "windfall.movement.elytra",
-            "windfall.movement.baritone", "windfall.movement.groundspoof",
-            "windfall.movement.phase", "windfall.movement.simulation",
-            "windfall.movement.noslow", "windfall.movement.motion",
-            "windfall.combat.reach", "windfall.combat.aim",
-            "windfall.combat.killaura", "windfall.combat.criticals",
-            "windfall.combat.fastheal", "windfall.combat.swordblock",
-            "windfall.combat.autoclicker", "windfall.combat.backtrack",
-            "windfall.combat.hitboxes", "windfall.combat.multiinteract",
-            "windfall.combat.selfinteract",
-            "windfall.packet.bad", "windfall.packet.cheststealer",
-            "windfall.packet.creative", "windfall.packet.order",
-            "windfall.packet.chat", "windfall.packet.crash",
-            "windfall.packet.sprint", "windfall.packet.exploit",
-            "windfall.packet.clientbrand", "windfall.packet.vehicle",
-            "windfall.packet.transaction"
-        };
-        for (String key : allChecks) {
-            config.addDefault("checks." + key + ".enabled", true);
-            config.addDefault("checks." + key + ".max-vl", 100);
-            config.addDefault("checks." + key + ".setback-vl", 20);
-            config.addDefault("checks." + key + ".decay", 0.02);
-            config.addDefault("checks." + key + ".punishable", true);
-        }
+        // Per-check entries are optional overrides. Do not register defaults here:
+        // registering them would make annotation setback/decay values indistinguishable
+        // from explicit operator settings. The bundled config.yml documents every key.
     }
 
     // === Alert config ===
     public boolean isAlertsEnabled() {
         return config.getBoolean("alerts.enabled", true);
+    }
+
+    /** Alert-only mode: flags/alerts still run, but punishment and setback are suppressed. */
+    public boolean isAlertOnlyMode() {
+        return config.getBoolean("alerts.alert-only", false);
     }
 
     public String getAlertPrefix() {
@@ -416,6 +395,88 @@ public class WindfallConfig {
         return config.getInt("prometheus.port", 9211);
     }
 
+    // === FastBreak config ===
+    public double getFastBreakTimeMultiplier() {
+        return config.getDouble("checks.windfall.movement.fastbreak.detection.time-multiplier", 0.85);
+    }
+
+    public double getFastBreakMinimumFlagBuffer() {
+        return config.getDouble("checks.windfall.movement.fastbreak.detection.minimum-flag-buffer", 3.0);
+    }
+
+    public long getFastBreakNetworkGraceMs() {
+        return config.getLong("checks.windfall.movement.fastbreak.detection.network-grace-ms", 100L);
+    }
+
+    public long getFastBreakMinimumCheckMs() {
+        return config.getLong("checks.windfall.movement.fastbreak.detection.minimum-check-ms", 50L);
+    }
+
+    public double getFastBreakBufferIncrease() {
+        return config.getDouble("checks.windfall.movement.fastbreak.detection.buffer-increase", 1.0);
+    }
+
+    public double getFastBreakBufferDecrease() {
+        return config.getDouble("checks.windfall.movement.fastbreak.detection.buffer-decrease", 1.0);
+    }
+
+    public boolean isFastBreakToolAware() {
+        return config.getBoolean("checks.windfall.movement.fastbreak.detection.account-for-tools", true);
+    }
+
+    public boolean isFastBreakEfficiencyAware() {
+        return config.getBoolean("checks.windfall.movement.fastbreak.detection.account-for-enchantments", true);
+    }
+
+    public double getFastBreakBlockTimeOverride(String materialName) {
+        return config.getDouble(
+                "checks.windfall.movement.fastbreak.detection.block-time-overrides." + materialName, 0.0);
+    }
+
+    public boolean isBlockCheckWorldExempt(String worldName) {
+        if (worldName == null || !config.getBoolean("block-checks.exempt-enabled", false)) return false;
+        return config.getStringList("block-checks.exempt-worlds").stream()
+                .anyMatch(w -> w.equalsIgnoreCase(worldName));
+    }
+
+    public boolean isBlockCheckRegionExempt() {
+        return config.getBoolean("block-checks.exempt-enabled", false)
+                && config.getBoolean("block-checks.exempt-in-worldguard-regions", false);
+    }
+
+    // === Nuker config ===
+    public long getNukerWindowMs() {
+        return config.getLong("checks.windfall.movement.nuker.detection.window-ms", 1000L);
+    }
+
+    public int getNukerMaximumBlocks() {
+        return config.getInt("checks.windfall.movement.nuker.detection.maximum-blocks", 12);
+    }
+
+    public int getNukerSuspiciousBlocks() {
+        return config.getInt("checks.windfall.movement.nuker.detection.suspicious-blocks", 7);
+    }
+
+    public int getNukerMinimumFastBlocks() {
+        return config.getInt("checks.windfall.movement.nuker.detection.minimum-fast-blocks", 3);
+    }
+
+    public int getNukerMaximumSameTick() {
+        return config.getInt("checks.windfall.movement.nuker.detection.maximum-same-tick", 1);
+    }
+
+    public double getNukerMinimumTargetSwitchDistance() {
+        return config.getDouble("checks.windfall.movement.nuker.detection.minimum-target-switch-distance", 2.0);
+    }
+
+    public double getNukerMaximumTargetSwitchDistance() {
+        return config.getDouble("checks.windfall.movement.nuker.detection.maximum-target-switch-distance", 7.0);
+    }
+
+    public double getNukerMinimumFlagBuffer() {
+        return config.getDouble("checks.windfall.movement.nuker.detection.minimum-flag-buffer", 3.0);
+    }
+
     // === Check config — falls back to default.* if per-check key not set ===
     public boolean isCheckEnabled(String checkKey) {
         String path = "checks." + checkKey + ".enabled";
@@ -447,6 +508,11 @@ public class WindfallConfig {
             return config.getDouble(path);
         }
         return config.getDouble("checks.default.decay", 0.02);
+    }
+
+    /** Returns true when a per-check option was explicitly present in config.yml. */
+    public boolean hasCheckOverride(String checkKey, String option) {
+        return config.isSet("checks." + checkKey + "." + option);
     }
 
     public boolean isCheckPunishable(String checkKey) {

@@ -43,6 +43,7 @@ public abstract class CheckTestBase {
         when(mockConfig.isCheckEnabled(anyString())).thenReturn(true);
         when(mockConfig.getCheckMaxVl(anyString())).thenReturn(100);
         when(mockConfig.isCheckPunishable(anyString())).thenReturn(true);
+        when(mockConfig.hasCheckOverride(anyString(), anyString())).thenReturn(false);
         when(mockConfig.isVerboseEnabled()).thenReturn(false);
 
         when(mockSeverityManager.getScaledVlIncrement(any(WindfallPlayer.class))).thenReturn(1);

@@ -31,9 +31,11 @@ import java.util.concurrent.ConcurrentHashMap;
  *   <li><b>Hover detection</b>: If the player stays airborne for more than {@value HOVER_TICK_THRESHOLD}
  *       ticks with near-zero vertical movement (&lt;{@value HOVER_DELTA_THRESHOLD}), the buffer increases
  *       by 1.0 per tick — catches hover/fly hacks that maintain a fixed Y.</li>
- *   <li><b>NoFall fallback</b>: Detects fall distance exceeding {@value NO_FALL_DISTANCE} blocks with
- *       vertical velocity exceeding {@value NO_FALL_VELOCITY_THRESHOLD} while on-ground.</li>
+ *   <li>Hover detection is independent from vertical prediction and catches a fixed-Y client.</li>
  * </ol>
+ *
+ * <p>NoFall detection is intentionally owned by {@link NoFallCheck} to avoid duplicate flags
+ * and contradictory airborne/on-ground branches.</p>
  *
  * @see PredictionEngine#predictDeltaY for vertical movement prediction
  * @see PredictionContext for per-tick movement data
@@ -52,10 +54,6 @@ public class FlightCheck extends Check implements PacketCheck {
     private static final int HOVER_TICK_THRESHOLD = 20;
     /** Maximum vertical displacement per tick to count as "hovering" (near-zero movement) */
     private static final double HOVER_DELTA_THRESHOLD = 0.005;
-    /** Minimum downward velocity (blocks/tick) to trigger no-fall fall-distance check */
-    private static final double NO_FALL_VELOCITY_THRESHOLD = 0.5;
-    /** Minimum fall distance (blocks) before the no-fall sub-check considers it a violation */
-    private static final double NO_FALL_DISTANCE = 3.0;
 
     private static final class PlayerState {
         double expectedDeltaY;
@@ -161,30 +159,27 @@ public class FlightCheck extends Check implements PacketCheck {
         boolean verticalDeviation = Math.abs(verticalDelta) > tolerance
                 && Math.abs(deltaY) > 0.01;
 
-        if (verticalDeviation && !isFallFlying && !hasRiptide && !ctx.hasLevitation) {
-            handleHoverDetection(player, state, ctx);
+        // Hover detection must run independently from vertical prediction. A hacked
+        // client can hold a constant Y that happens to be close to the predicted value.
+        handleHoverDetection(player, state, ctx);
 
+        if (verticalDeviation && !isFallFlying && !hasRiptide && !ctx.hasLevitation) {
             /**
              * Upward movement when expected to be falling or stationary is heavily penalized.
              * This catches fly hacks that push the player upward against gravity.
              */
-            if (deltaY > 0 && state.expectedDeltaY <= 0 && !ctx.hasLevitation && !hasRiptide && !isFallFlying) {
+            if (deltaY > 0 && state.expectedDeltaY <= 0) {
                 increaseBuffer(player, 1.5);
                 if (getBuffer(player) > 3.0) {
                     flag(player);
                     resetBuffer(player);
                 }
             } else {
-                /**
-                 * deviationRatio = magnitude of deviation relative to prediction.
-                 * A ratio > 2.0 is blatant and triggers an immediate flag.
-                 */
                 double deviationRatio = Math.abs(verticalDelta) / Math.max(Math.abs(predictedDeltaY), 0.001);
                 if (deviationRatio > 2.0) {
                     flag(player);
                     resetBuffer(player);
                 } else {
-                    /** Gradual buffer increase, capped at a 2.0 deviation ratio contribution */
                     increaseBuffer(player, 0.3 * Math.min(deviationRatio, 2.0));
                     if (getBuffer(player) > 5.0) {
                         flag(player);
@@ -194,10 +189,8 @@ public class FlightCheck extends Check implements PacketCheck {
             }
         } else {
             decreaseBuffer(player, 0.1);
-            state.hoverTicks = Math.max(0, state.hoverTicks - 1);
         }
 
-        handleNoFall(player, currentOnGround, deltaY, ctx.lastY, ctx.y);
         /** Update the expected velocity for the next tick's prediction */
         state.expectedDeltaY = deltaY;
     }
@@ -234,32 +227,6 @@ public class FlightCheck extends Check implements PacketCheck {
             }
         } else {
             state.hoverTicks = Math.max(0, state.hoverTicks - 1);
-        }
-    }
-
-    /**
-     * Detects no-fall: falling with significant velocity while simultaneously claiming on-ground.
-     *
-     * <p>This sub-check catches clients that spoof the on-ground flag to prevent fall damage
-     * while still falling through the air. Uses a simple velocity + distance threshold.
-     *
-     * @param player       the player being checked
-     * @param currentOnGround whether the player claims to be on the ground this tick
-     * @param deltaY       current vertical velocity (negative = falling)
-     * @param lastY        previous tick Y position
-     * @param currentY     current tick Y position
-     */
-    private void handleNoFall(WindfallPlayer player, boolean currentOnGround, double deltaY,
-                              double lastY, double currentY) {
-        if (!currentOnGround && deltaY < -NO_FALL_VELOCITY_THRESHOLD) {
-            double fallDistance = lastY - currentY;
-            if (fallDistance > NO_FALL_DISTANCE) {
-                if (currentOnGround) {
-                    flagWithSetback(player);
-                } else {
-                    flag(player);
-                }
-            }
         }
     }
 }

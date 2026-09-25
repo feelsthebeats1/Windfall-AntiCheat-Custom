@@ -27,7 +27,7 @@
 
 Windfall intercepts incoming packets via [PacketEvents 2](https://github.com/retrooper/packetevents) and evaluates player behaviour against a configurable set of checks. A **single JAR** works across every supported server version — no separate builds required.
 
-**52 checks** across 4 categories, with a **5-layer compatibility system** that adapts detection thresholds per-player based on protocol version, server fork, installed plugins, and Bedrock status.
+**54 checks** across 4 categories, with a **5-layer compatibility system** that adapts detection thresholds per-player based on protocol version, server fork, installed plugins, and Bedrock status.
 
 **Public API** available via `WindfallAPI` for external plugins to query player data, violation levels, and check status.
 
@@ -77,8 +77,8 @@ Windfall intercepts incoming packets via [PacketEvents 2](https://github.com/ret
 | NoFall | Missing or incorrect fall packets |
 | NoSlow | Bypassing item-use movement slowdown |
 | No Swing | Missing arm-swing animation on block interactions |
+| Nuker | High-throughput breaking with fast-break and target-switch evidence |
 | Phase | Wall clipping / phase detection |
-| Position Break | Squared-distance reach validation |
 | Position Place | Squared-distance placement validation |
 | Rotation Break | Excessive view rotation during block break |
 | Rotation Place | Excessive view rotation during block place |

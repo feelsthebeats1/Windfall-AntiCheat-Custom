@@ -49,6 +49,22 @@ class CheckBaseTest extends CheckTestBase {
         NoSwingCheck check = new NoSwingCheck();
         assertFalse(check.isPunishable());
     }
+    @Test
+    void constructor_readCheckData_setbackVl_canBeOverriddenByConfig() {
+        when(mockConfig.hasCheckOverride("windfall.movement.noswing", "setback-vl")).thenReturn(true);
+        when(mockConfig.getCheckSetbackVl("windfall.movement.noswing")).thenReturn(42);
+        NoSwingCheck check = new NoSwingCheck();
+        assertEquals(42, check.getSetbackVl());
+    }
+
+    @Test
+    void constructor_readCheckData_decay_canBeOverriddenByConfig() {
+        when(mockConfig.hasCheckOverride("windfall.movement.noswing", "decay")).thenReturn(true);
+        when(mockConfig.getCheckDecay("windfall.movement.noswing")).thenReturn(0.125);
+        NoSwingCheck check = new NoSwingCheck();
+        assertEquals(0.125, check.getDecay(), 0.0001);
+    }
+
 
     @Test
     void increaseBuffer_addsToBuffer() {
@@ -156,6 +172,26 @@ class CheckBaseTest extends CheckTestBase {
         check.flag(player);
 
         verify(mockSeverityManager).getScaledVlIncrement(player);
+    }
+
+    @Test
+    void flag_withDetail_incrementsViolationLevel() {
+        NoSwingCheck check = new NoSwingCheck();
+        WindfallPlayer player = createMockPlayer("Test");
+
+        check.flag(player, "block=STONE expected=1500ms actual=120ms");
+
+        assertEquals(1, check.getViolationLevel(player));
+    }
+
+    @Test
+    void flag_withNullDetail_matchesLegacyBehaviour() {
+        NoSwingCheck check = new NoSwingCheck();
+        WindfallPlayer player = createMockPlayer("Test");
+
+        check.flag(player, null);
+
+        assertEquals(1, check.getViolationLevel(player));
     }
 
     @Test

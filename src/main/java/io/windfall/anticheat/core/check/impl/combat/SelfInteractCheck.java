@@ -11,16 +11,15 @@ import io.windfall.anticheat.core.check.type.PacketCheck;
 import io.windfall.anticheat.core.player.WindfallPlayer;
 
 /**
- * Detects self-interaction packets where a player sends an attack packet targeting themselves.
+ * Detects self-interaction packets and impossible entity interaction cursor geometry.
  *
- * <p><b>Why this matters:</b> Self-interaction packets are impossible to generate from the
- * vanilla client. They are only produced by hacked clients or packet manipulation tools,
- * typically to trigger unintended server-side behavior (e.g., hit registration exploits,
- * kill-self macros, or packet injection testing).</p>
+ * <p>Self-targeting attack packets are impossible in vanilla. For other targets, the
+ * check uses the target's packet-tracked AABB and the attacker's last rotation. Sustained
+ * extreme centre-angle mismatches add cursor evidence, while normal large-entity hits
+ * are tolerated.</p>
  *
- * <p><b>Response:</b> Upon detection, the player is immediately flagged and kicked with
- * the message {@code "[Windfall] Self-interaction detected"}. The check has zero decay
- * ({@code decay = 0.0}) as any occurrence is a definitive violation.</p>
+ * <p><b>Why this matters:</b> Crafted self-interaction or cursor-mismatched packets can
+ * trigger unintended combat, interaction, or server-side state behavior.</p>
  */
 @CheckData(name = "Self Interact A", stableKey = "windfall.combat.selfinteract", decay = 0.0, setbackVl = 5)
 public class SelfInteractCheck extends Check implements PacketCheck {
@@ -45,10 +44,48 @@ public class SelfInteractCheck extends Check implements PacketCheck {
         if (targetId == selfId) {
             flag(player);
             player.getPlayer().kickPlayer("[Windfall] Self-interaction detected");
+            return;
+        }
+
+        double[] box = ReachCheck.getTrackedEntityBoundingBox(targetId);
+        if (box == null || player.getPlayer() == null) return;
+
+        double eyeX = player.getX();
+        double eyeY = player.getY() + player.getEyeHeight();
+        double eyeZ = player.getZ();
+        double targetX = (box[0] + box[3]) * 0.5;
+        double targetY = (box[1] + box[4]) * 0.5;
+        double targetZ = (box[2] + box[5]) * 0.5;
+        double dx = targetX - eyeX;
+        double dy = targetY - eyeY;
+        double dz = targetZ - eyeZ;
+        double horizontal = Math.sqrt(dx * dx + dz * dz);
+        double expectedYaw = Math.toDegrees(Math.atan2(-dx, dz));
+        double expectedPitch = Math.toDegrees(Math.atan2(-dy, horizontal));
+        double deltaYaw = Math.abs(normalizeDegrees(player.getYaw() - expectedYaw));
+        double deltaPitch = Math.abs(player.getPitch() - expectedPitch);
+
+        // Large entities can be hit while looking away from their centre. Sustained
+        // extreme mismatch is treated as evidence of an impossible interact cursor.
+        if (deltaYaw > 75.0 || deltaPitch > 75.0) {
+            increaseBuffer(player, 0.5);
+            if (getBuffer(player) > 5.0) {
+                flag(player);
+                resetBuffer(player);
+            }
+        } else {
+            decreaseBuffer(player, 0.1);
         }
     }
 
     @Override
     public void onPacketSend(WindfallPlayer player, PacketSendEvent event) {
+    }
+
+    private static double normalizeDegrees(double angle) {
+        angle %= 360.0;
+        if (angle > 180.0) angle -= 360.0;
+        if (angle < -180.0) angle += 360.0;
+        return angle;
     }
 }

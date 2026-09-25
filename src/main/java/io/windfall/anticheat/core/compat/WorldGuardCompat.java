@@ -5,6 +5,10 @@ import org.bukkit.Location;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.Plugin;
 
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+
 /**
  * WorldGuard integration for region-based exemptions.
  *
@@ -20,8 +24,24 @@ import org.bukkit.plugin.Plugin;
  */
 public final class WorldGuardCompat {
 
+    /** Region query does ~9 reflective calls, so results are cached per player for a short TTL. */
+    private static final long CACHE_TTL_MS = 500L;
+
     private final Object worldGuardPlugin;
     private boolean available = true;
+
+    /** Cached region membership per player (uuid -> entry). */
+    private final Map<UUID, CachedRegion> regionCache = new ConcurrentHashMap<>();
+
+    private static final class CachedRegion {
+        final boolean inRegion;
+        final long timestamp;
+
+        CachedRegion(boolean inRegion, long timestamp) {
+            this.inRegion = inRegion;
+            this.timestamp = timestamp;
+        }
+    }
 
     private WorldGuardCompat(Object worldGuardPlugin) {
         this.worldGuardPlugin = worldGuardPlugin;
@@ -138,6 +158,36 @@ public final class WorldGuardCompat {
         java.util.Set<?> regionSet = (java.util.Set<?>) regions.getClass()
             .getMethod("getRegions").invoke(regions);
         return !regionSet.isEmpty();
+    }
+
+    /**
+     * Cached variant of {@link #isInRegion(Player)} for hot paths such as packet handlers.
+     *
+     * <p>The reflective WorldGuard query is comparatively expensive, so results are cached
+     * per player for {@link #CACHE_TTL_MS}. A fresh cache entry short-circuits without any
+     * reflection; expired entries trigger one real query and are re-cached.
+     *
+     * @param player the player to check
+     * @return true when the player is inside at least one region (cached when fresh)
+     */
+    public boolean isInRegionCached(Player player) {
+        if (!available || worldGuardPlugin == null || player == null) return false;
+        UUID uuid = player.getUniqueId();
+        long now = System.currentTimeMillis();
+        CachedRegion cached = regionCache.get(uuid);
+        if (cached != null && now - cached.timestamp < CACHE_TTL_MS) {
+            return cached.inRegion;
+        }
+        boolean inRegion = isInRegion(player);
+        regionCache.put(uuid, new CachedRegion(inRegion, now));
+        return inRegion;
+    }
+
+    /** Drops a player's cached region entry — call on quit. */
+    public void invalidateCache(UUID uuid) {
+        if (uuid != null) {
+            regionCache.remove(uuid);
+        }
     }
 
     /**

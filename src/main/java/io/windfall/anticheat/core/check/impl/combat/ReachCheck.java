@@ -2,18 +2,27 @@ package io.windfall.anticheat.core.check.impl.combat;
 
 import com.github.retrooper.packetevents.event.PacketReceiveEvent;
 import com.github.retrooper.packetevents.event.PacketSendEvent;
-import com.github.retrooper.packetevents.protocol.packettype.PacketType;
 import com.github.retrooper.packetevents.protocol.entity.type.EntityType;
 import com.github.retrooper.packetevents.protocol.entity.type.EntityTypes;
+import com.github.retrooper.packetevents.protocol.packettype.PacketType;
+import com.github.retrooper.packetevents.protocol.packettype.PacketTypeCommon;
+import com.github.retrooper.packetevents.util.Vector3d;
 import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientInteractEntity;
 import io.windfall.anticheat.core.check.Check;
 import io.windfall.anticheat.core.check.CheckData;
 import io.windfall.anticheat.core.check.CompatFlag;
 import io.windfall.anticheat.core.check.type.PacketCheck;
 import io.windfall.anticheat.core.physics.VersionPhysics;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerDestroyEntities;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityPositionSync;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityRelativeMove;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityRelativeMoveAndRotation;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityTeleport;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSpawnEntity;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSpawnLivingEntity;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSpawnPlayer;
 import io.windfall.anticheat.core.player.WindfallPlayer;
-import com.github.retrooper.packetevents.protocol.packettype.PacketTypeCommon;
-import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientPlayerRotation;
+import io.windfall.anticheat.core.player.WindfallPlayer;
 import java.util.ArrayDeque;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -70,8 +79,8 @@ public class ReachCheck extends Check implements PacketCheck {
     private static final double PLAYER_SNEAK_HEIGHT_1_14 = 1.5;
     /** Sneaking player eye height (legacy versions). */
     private static final double PLAYER_SNEAK_HEIGHT_LEGACY = 1.62;
-    /** Default non-player entity size used when the entity type is unknown. */
-    private static final double ENTITY_DEFAULT_SIZE = 0.25;
+    /** Conservative non-player bounds used when entity-specific metadata is unavailable. */
+    private static final double ENTITY_DEFAULT_SIZE = 1.8;
 
     /** Number of recent reach samples kept for averaging (rolling window). */
     private static final int ROLLING_WINDOW = 20;
@@ -158,6 +167,26 @@ public class ReachCheck extends Check implements PacketCheck {
                 (old, fresh) -> new TrackedEntity(
                         old.type != null ? old.type : fresh.type,
                         fresh.x, fresh.y, fresh.z, fresh.timestamp));
+    }
+
+    /** Applies a relative entity movement packet to the shared cache. */
+    public static void trackRelativeMove(int entityId, double deltaX, double deltaY, double deltaZ) {
+        trackedEntities.computeIfPresent(entityId, (id, old) -> new TrackedEntity(
+                old.type, old.x + deltaX, old.y + deltaY, old.z + deltaZ,
+                System.currentTimeMillis()));
+    }
+
+    /** Returns the cached target AABB for combat geometry checks, or null when unknown. */
+    public static double[] getTrackedEntityBoundingBox(int entityId) {
+        return getEntityBoundingBox(entityId);
+    }
+
+    /** Returns the shortest eye-to-target-AABB distance for combat geometry checks. */
+    public static double distanceToTrackedEntity(int entityId, double eyeX, double eyeY, double eyeZ) {
+        double[] box = getEntityBoundingBox(entityId);
+        return box == null ? Double.NaN : calculateReachDistance(
+                eyeX, eyeY, eyeZ,
+                box[0], box[1], box[2], box[3], box[4], box[5]);
     }
 
     /**
@@ -293,6 +322,44 @@ public class ReachCheck extends Check implements PacketCheck {
 
     @Override
     public void onPacketSend(WindfallPlayer player, PacketSendEvent event) {
+        PacketTypeCommon type = event.getPacketType();
+        try {
+            if (type == PacketType.Play.Server.SPAWN_ENTITY) {
+                WrapperPlayServerSpawnEntity wrapper = new WrapperPlayServerSpawnEntity(event);
+                Vector3d pos = wrapper.getPosition();
+                trackSpawn(wrapper.getEntityId(), wrapper.getEntityType(), pos.x, pos.y, pos.z);
+            } else if (type == PacketType.Play.Server.SPAWN_LIVING_ENTITY) {
+                WrapperPlayServerSpawnLivingEntity wrapper = new WrapperPlayServerSpawnLivingEntity(event);
+                Vector3d pos = wrapper.getPosition();
+                trackSpawn(wrapper.getEntityId(), wrapper.getEntityType(), pos.x, pos.y, pos.z);
+            } else if (type == PacketType.Play.Server.SPAWN_PLAYER) {
+                WrapperPlayServerSpawnPlayer wrapper = new WrapperPlayServerSpawnPlayer(event);
+                Vector3d pos = wrapper.getPosition();
+                trackSpawn(wrapper.getEntityId(), EntityTypes.PLAYER, pos.x, pos.y, pos.z);
+            } else if (type == PacketType.Play.Server.ENTITY_TELEPORT) {
+                WrapperPlayServerEntityTeleport wrapper = new WrapperPlayServerEntityTeleport(event);
+                Vector3d pos = wrapper.getPosition();
+                trackMove(wrapper.getEntityId(), pos.x, pos.y, pos.z);
+            } else if (type == PacketType.Play.Server.ENTITY_POSITION_SYNC) {
+                WrapperPlayServerEntityPositionSync wrapper = new WrapperPlayServerEntityPositionSync(event);
+                Vector3d pos = wrapper.getValues().getPosition();
+                trackMove(wrapper.getId(), pos.x, pos.y, pos.z);
+            } else if (type == PacketType.Play.Server.ENTITY_RELATIVE_MOVE) {
+                WrapperPlayServerEntityRelativeMove wrapper = new WrapperPlayServerEntityRelativeMove(event);
+                trackRelativeMove(wrapper.getEntityId(), wrapper.getDeltaX(), wrapper.getDeltaY(), wrapper.getDeltaZ());
+            } else if (type == PacketType.Play.Server.ENTITY_RELATIVE_MOVE_AND_ROTATION) {
+                WrapperPlayServerEntityRelativeMoveAndRotation wrapper =
+                        new WrapperPlayServerEntityRelativeMoveAndRotation(event);
+                trackRelativeMove(wrapper.getEntityId(), wrapper.getDeltaX(), wrapper.getDeltaY(), wrapper.getDeltaZ());
+            } else if (type == PacketType.Play.Server.DESTROY_ENTITIES) {
+                WrapperPlayServerDestroyEntities wrapper = new WrapperPlayServerDestroyEntities(event);
+                for (int entityId : wrapper.getEntityIds()) {
+                    trackRemove(entityId);
+                }
+            }
+        } catch (Exception ignored) {
+            // Packet variants without a compatible wrapper are safely ignored.
+        }
     }
 
     /**
@@ -420,7 +487,7 @@ public class ReachCheck extends Check implements PacketCheck {
      * @param bbMaxZ target AABB maximum Z
      * @return the shortest distance in blocks from the eye to the bounding box
      */
-    private double calculateReachDistance(double eyeX, double eyeY, double eyeZ,
+    private static double calculateReachDistance(double eyeX, double eyeY, double eyeZ,
                                           double bbMinX, double bbMinY, double bbMinZ,
                                           double bbMaxX, double bbMaxY, double bbMaxZ) {
         double closestX = clamp(eyeX, bbMinX, bbMaxX);
@@ -441,7 +508,7 @@ public class ReachCheck extends Check implements PacketCheck {
      * @param entityId the entity's network ID
      * @return a 6-element array representing the AABB, or {@code null} if not tracked
      */
-    private double[] getEntityBoundingBox(int entityId) {
+    private static double[] getEntityBoundingBox(int entityId) {
         TrackedEntity te = trackedEntities.get(entityId);
         if (te == null) return null;
 

@@ -97,7 +97,7 @@ The built JAR will be at `target/Windfall.jar`.
 mvn test
 ```
 
-All 553 tests must pass before submitting a PR.
+All 662 tests must pass before submitting a PR.
 
 ### Project Structure
 

@@ -2,11 +2,14 @@ package io.windfall.anticheat.core.check.impl.movement;
 
 import com.github.retrooper.packetevents.event.PacketReceiveEvent;
 import com.github.retrooper.packetevents.event.PacketSendEvent;
+import com.github.retrooper.packetevents.protocol.world.BlockFace;
+import com.github.retrooper.packetevents.util.Vector3f;
 import com.github.retrooper.packetevents.protocol.packettype.PacketType;
 import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientPlayerBlockPlacement;
 import io.windfall.anticheat.WindfallPlugin;
 import io.windfall.anticheat.core.check.Check;
 import io.windfall.anticheat.core.check.CheckData;
+import io.windfall.anticheat.core.check.CompatFlag;
 import io.windfall.anticheat.core.check.type.PacketCheck;
 import io.windfall.anticheat.core.player.WindfallPlayer;
 import java.util.UUID;
@@ -32,7 +35,13 @@ import org.bukkit.Material;
  * @see MultiPlaceCheck — companion check for per-tick placement rate
  * @see FarPlaceCheck — companion check for placement distance
  */
-@CheckData(name = "Invalid Place A", stableKey = "windfall.movement.invalidplace", decay = 0.02, setbackVl = 10)
+@CheckData(
+    name = "Invalid Place A",
+    stableKey = "windfall.movement.invalidplace",
+    decay = 0.02,
+    setbackVl = 10,
+    compat = {CompatFlag.FOLIA_UNSAFE}
+)
 public class InvalidPlaceCheck extends Check implements PacketCheck {
 
     /**
@@ -101,10 +110,24 @@ public class InvalidPlaceCheck extends Check implements PacketCheck {
 
         WrapperPlayClientPlayerBlockPlacement wrapper = new WrapperPlayClientPlayerBlockPlacement(event);
         var position = wrapper.getBlockPosition();
+        BlockFace face = wrapper.getFace();
+        if (face == null || face == BlockFace.OTHER) return;
 
         int bx = position.getX();
         int by = position.getY();
         int bz = position.getZ();
+
+        if (player.getProtocolVersion() >= 477) {
+            Vector3f cursor = wrapper.getCursorPosition();
+            if (cursor != null && !isCursorOnFace(cursor, bx, by, bz, face)) {
+                increaseBuffer(player, 1.0);
+                if (getBuffer(player) > 5.0) {
+                    flagDetail(player, "placement cursor does not intersect the declared block face");
+                    resetBuffer(player);
+                }
+                return;
+            }
+        }
 
         try {
             Material type = player.getPlayer().getWorld().getBlockAt(bx, by, bz).getType();
@@ -140,8 +163,31 @@ public class InvalidPlaceCheck extends Check implements PacketCheck {
      * @param detail a human-readable description of what was detected
      */
     private void flagDetail(WindfallPlayer player, String detail) {
-        flag(player);
-        var logger = io.windfall.anticheat.WindfallPlugin.getInstance().getLogger();
-        logger.warning("[Invalid Place A] " + player.getName() + ": " + detail);
+        // Forward the reason to staff alerts / Discord instead of console-only logging.
+        flag(player, detail);
+    }
+
+    /**
+     * Verifies that the modern cursor point lies on the face encoded by the packet.
+     * A small tolerance is used because older clients and ViaVersion can round the
+     * cursor by a few thousandths around block edges.
+     */
+    private static boolean isCursorOnFace(Vector3f cursor, int bx, int by, int bz, BlockFace face) {
+        final double tolerance = 0.002;
+        double plane = face.getModX() != 0 ? cursor.getX()
+                : face.getModY() != 0 ? cursor.getY() : cursor.getZ();
+        int blockX = face.getModX() != 0 ? bx : face.getModY() != 0 ? by : bz;
+        int direction = face.getModX() + face.getModY() + face.getModZ();
+        double expectedPlane = blockX + (direction > 0 ? 1.0 : 0.0);
+        if (Math.abs(plane - expectedPlane) > tolerance) return false;
+
+        return withinBlock(cursor.getX(), bx, tolerance)
+                && withinBlock(cursor.getY(), by, tolerance)
+                && withinBlock(cursor.getZ(), bz, tolerance);
+    }
+
+    private static boolean withinBlock(double coordinate, int blockCoordinate, double tolerance) {
+        return coordinate >= blockCoordinate - tolerance
+                && coordinate <= blockCoordinate + 1.0 + tolerance;
     }
 }

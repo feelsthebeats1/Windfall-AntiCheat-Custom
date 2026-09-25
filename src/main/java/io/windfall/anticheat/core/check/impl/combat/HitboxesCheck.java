@@ -9,6 +9,7 @@ import io.windfall.anticheat.core.check.Check;
 import io.windfall.anticheat.core.check.CheckData;
 import io.windfall.anticheat.core.check.CompatFlag;
 import io.windfall.anticheat.core.check.type.PacketCheck;
+import io.windfall.anticheat.core.physics.VersionPhysics;
 import io.windfall.anticheat.core.player.WindfallPlayer;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -17,33 +18,12 @@ import java.util.concurrent.ConcurrentHashMap;
  * Detects hitbox expansion cheats that artificially enlarge a player's or
  * entity's bounding box to make hits register at impossible distances.
  *
- * <p>This check reconstructs the player's look vector from their yaw and pitch,
- * projects it to the vanilla maximum reach distance ({@value #MAX_REACH} blocks
- * + {@value #PLAYER_BOX_EXPANSION} tolerance), and counts each attack as
- * "on-target" if the projected endpoint is within the expanded hitbox radius.</p>
+ * <p>This check uses the entity positions and bounding boxes observed in outgoing server
+ * packets. Each attack is measured from the attacker's eye to the closest point on the
+ * target AABB; attacks are ignored until target geometry is known.</p>
  *
- * <h3>Algorithm</h3>
- * <ol>
- *   <li>On each attack packet, compute the look-vector endpoint using the
- *       standard Minecraft rotation-to-direction formula projected
- *       {@value #MAX_REACH} blocks.</li>
- *   <li>If the endpoint is within {@value #MAX_REACH} + {@value #PLAYER_BOX_EXPANSION}
- *       blocks (the expanded bounding-box allowance), count it as a hit.</li>
- *   <li>After {@value #MIN_ATTACKS_PER_EVAL} attacks, compute the hit ratio.
- *       If the ratio exceeds {@value #HIT_RATIO_FLAG_THRESHOLD} (80%) and
- *       there are more than 20 total attacks, increment the buffer.</li>
- *   <li>The buffer flags at &gt; 5.0 and is reset after each flag.</li>
- * </ol>
- *
- * <h3>Key Constants</h3>
- * <ul>
- *   <li>{@value #MAX_REACH} (3.5) — vanilla maximum melee reach in blocks.</li>
- *   <li>{@value #PLAYER_BOX_EXPANSION} (0.15) — tolerance added to account for
- *       legitimate hitbox edge cases (latency, movement interpolation).</li>
- *   <li>{@value #HIT_RATIO_FLAG_THRESHOLD} (0.8) — above this, the player is
- *       hitting far more often than legitimately possible, suggesting expanded
- *       hitboxes.</li>
- * </ul>
+ * <p><b>Hit ratio:</b> Repeated samples inside the protocol reach window are accumulated.
+ * A consistent abnormal ratio can indicate client-side target selection or hitbox abuse.</p>
  *
  * @see Check
  * @see PacketCheck
@@ -52,29 +32,20 @@ import java.util.concurrent.ConcurrentHashMap;
 public class HitboxesCheck extends Check implements PacketCheck {
 
     /**
-     * Tolerance (in blocks) added to the vanilla reach distance to account for
-     * legitimate edge cases such as latency and entity-size variance.
+     * Extra margin applied to the protocol reach before distance is considered anomalous.
+     * Reach and Hitboxes are intentionally kept separate: Hitboxes accumulates repeated
+     * borderline samples while Reach applies the stricter immediate limit.
      */
     private static final double PLAYER_BOX_EXPANSION = 0.15;
 
     /** Minimum attack count before the hit-ratio evaluation is performed. */
     private static final int MIN_ATTACKS_PER_EVAL = 16;
 
-    /**
-     * Hit-ratio threshold above which the player is flagged. 0.8 means 80% of
-     * attacks land, which is inhumanly consistent at maximum reach.
-     */
+    /** Ratio of attacks inside the packet-tracked target AABB. */
     private static final double HIT_RATIO_FLAG_THRESHOLD = 0.8;
 
-    /**
-     * Hard-flag threshold for blatant violations. If any single attack distance
-     * exceeds this value (blocks), a flag is raised immediately regardless of
-     * hit ratio. Adapted from ArrowAntiCheat's HitboxA center-angle threshold.
-     */
+    /** Hard limit used only when target geometry is known. */
     private static final double BLATANT_FLAG_THRESHOLD = 5.0;
-
-    /** Vanilla maximum melee reach distance in blocks. */
-    private static final double MAX_REACH = 3.5;
 
     /** Buffer level at which a hitboxes flag is triggered. */
     private static final double FLAG_BUFFER_THRESHOLD = 5.0;
@@ -111,10 +82,8 @@ public class HitboxesCheck extends Check implements PacketCheck {
     /**
      * Processes attack-entity packets to evaluate hit-ratio consistency.
      *
-     * <p>For each attack the look vector is projected from the player's eye
-     * position and the hit distance is compared against the expanded reach
-     * allowance. After enough samples the ratio of hits to total attacks is
-     * evaluated against the flag threshold.</p>
+     * <p>Evaluates attacks only when the target's packet-tracked AABB is available. The
+     * shortest eye-to-AABB distance is compared with protocol reach and a rolling hit ratio.
      *
      * @param player the player performing the attack
      * @param event  the raw packet event
@@ -127,34 +96,27 @@ public class HitboxesCheck extends Check implements PacketCheck {
         if (wrapper.getAction() != WrapperPlayClientInteractEntity.InteractAction.ATTACK) return;
 
         PlayerState state = getState(player);
-        state.totalAttacks++;
-
-        /* Player eye-position (origin of the look vector). */
+        int targetId = wrapper.getEntityId();
         double eyeX = player.getX();
         double eyeY = player.getY() + player.getEyeHeight();
         double eyeZ = player.getZ();
-        float yaw = player.getYaw();
-        float pitch = player.getPitch();
+        double hitDistance = ReachCheck.distanceToTrackedEntity(targetId, eyeX, eyeY, eyeZ);
 
-        /*
-         * Project the look vector to the maximum reach distance using the
-         * standard Minecraft rotation-to-direction formula:
-         *   lookX = -sin(yaw) * cos(pitch) * reach
-         *   lookY = -sin(pitch) * reach
-         *   lookZ =  cos(yaw) * cos(pitch) * reach
-         */
-        double lookX = -Math.sin(Math.toRadians(yaw)) * Math.cos(Math.toRadians(pitch)) * MAX_REACH;
-        double lookY = -Math.sin(Math.toRadians(pitch)) * MAX_REACH;
-        double lookZ = Math.cos(Math.toRadians(yaw)) * Math.cos(Math.toRadians(pitch)) * MAX_REACH;
+        // Entity spawn/move packets may lag behind the first attack. Unknown geometry is
+        // ignored instead of treating a fixed-length look vector as a real hit result.
+        if (Double.isNaN(hitDistance)) {
+            decreaseBuffer(player, 0.1);
+            return;
+        }
 
-        /* Maximum allowed reach including the expansion tolerance. */
-        double maxReach = MAX_REACH + PLAYER_BOX_EXPANSION;
-
-        /* Euclidean distance from eye to projected endpoint. */
-        double hitDistance = Math.sqrt(lookX * lookX + lookY * lookY + lookZ * lookZ);
-
-        /* Hard-flag: blatant hitbox extension detected on a single attack. */
-        if (hitDistance > BLATANT_FLAG_THRESHOLD) {
+        state.totalAttacks++;
+        double protocolReach = VersionPhysics.getMaxReach(player.getProtocolVersion());
+        if (VersionPhysics.hasAttackCooldown(player.getProtocolVersion())) {
+            protocolReach += VersionPhysics.getCooldownReachBonus(player.getProtocolVersion())
+                    * Math.min(player.getAttackCooldown() / 20.0, 1.0);
+        }
+        double hardLimit = protocolReach + 0.35 + Math.min(player.getTransactionPing() * 0.001, 0.2);
+        if (hitDistance > BLATANT_FLAG_THRESHOLD || hitDistance > hardLimit) {
             flag(player);
             resetBuffer(player);
             state.attacksOnTarget = 0;
@@ -162,7 +124,7 @@ public class HitboxesCheck extends Check implements PacketCheck {
             return;
         }
 
-        if (hitDistance < maxReach) {
+        if (hitDistance <= protocolReach + PLAYER_BOX_EXPANSION) {
             state.attacksOnTarget++;
         }
 

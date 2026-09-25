@@ -6,7 +6,9 @@ import com.github.retrooper.packetevents.protocol.packettype.PacketType;
 import com.github.retrooper.packetevents.protocol.player.DiggingAction;
 import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientPlayerDigging;
 import io.windfall.anticheat.core.check.Check;
+import io.windfall.anticheat.WindfallPlugin;
 import io.windfall.anticheat.core.check.CheckData;
+import io.windfall.anticheat.core.check.CompatFlag;
 import io.windfall.anticheat.core.check.type.PacketCheck;
 import io.windfall.anticheat.core.player.WindfallPlayer;
 import java.util.UUID;
@@ -20,26 +22,23 @@ import org.bukkit.Material;
  * vanilla break-time table.
  *
  * <p><b>Algorithm:</b> On START_DIGGING the block type and timestamp are
- * recorded. On FINISHED_DIGGING the elapsed time is compared to
- * {@link #getVanillaBreakTime(Material)} * {@link #MAX_FAST_BREAK_MULTIPLIER}.
- * If the player breaks the block in less than 85% of the vanilla time,
- * the buffer increases. Three consecutive fast breaks trigger a flag.</p>
+ * recorded. On FINISHED_DIGGING the elapsed time is compared with the
+ * configured tool-aware baseline. Repeated violations accumulate in a buffer
+ * and trigger a flag at the configured threshold.</p>
+ *
+ * <p>Block types are resolved off-thread: this handler enqueues the coordinates via
+ * {@link WindfallPlayer#requestBlockType} and reads the result on FINISHED_DIGGING from
+ * the tick-thread snapshot, so {@code World#getBlockAt} is never called from Netty.</p>
+ *
+ * <p>Marked {@link CompatFlag#FOLIA_UNSAFE} because the exemption check still consults the
+ * Bukkit player and WorldGuard from the packet thread.</p>
  *
  * @see Check
  * @see PacketCheck
  */
-@CheckData(name = "Fast Break A", stableKey = "windfall.movement.fastbreak", decay = 0.02, setbackVl = 20)
+@CheckData(name = "Fast Break A", stableKey = "windfall.movement.fastbreak", decay = 0.02,
+    setbackVl = 20, compat = {CompatFlag.FOLIA_UNSAFE})
 public class FastBreakCheck extends Check implements PacketCheck {
-
-    /**
-     * A block break is flagged only if the elapsed time is less than this
-     * fraction of the vanilla break time. 0.85 allows 15% tolerance for
-     * latency and rounding.
-     */
-    private static final double MAX_FAST_BREAK_MULTIPLIER = 0.85;
-
-    /** Buffer level at which the player is flagged after consecutive fast breaks. */
-    private static final int BUFFER_THRESHOLD = 3;
 
     /** Per-player state tracking the in-progress block break. */
     private static final class PlayerState {
@@ -47,20 +46,21 @@ public class FastBreakCheck extends Check implements PacketCheck {
         long breakStartTime;
         /** Whether a break is currently in progress (START received, not yet FINISHED). */
         boolean breaking;
-        /** X coordinate of the block being broken. */
         int blockX;
-        /** Y coordinate of the block being broken. */
         int blockY;
-        /** Z coordinate of the block being broken. */
         int blockZ;
-        /** Material of the block at the break start, used for vanilla-time lookup. */
-        Material blockType;
+        Material toolType;
+        int efficiencyLevel;
+        double toolSpeed;
+        long startTime;
 
-        /** Resets the break state back to idle. */
         void reset() {
             breaking = false;
             breakStartTime = 0;
-            blockType = null;
+            toolType = null;
+            efficiencyLevel = 0;
+            toolSpeed = 1.0;
+            startTime = 0;
         }
     }
 
@@ -91,39 +91,56 @@ public class FastBreakCheck extends Check implements PacketCheck {
         PlayerState state = getState(player);
 
         if (action == DiggingAction.START_DIGGING) {
+            if (BlockCheckExempt.isExempt(player)) {
+                state.reset();
+                return;
+            }
             state.breaking = true;
             state.breakStartTime = System.currentTimeMillis();
+            state.startTime = state.breakStartTime;
             state.blockX = wrapper.getBlockPosition().getX();
             state.blockY = wrapper.getBlockPosition().getY();
             state.blockZ = wrapper.getBlockPosition().getZ();
-            try {
-                state.blockType = player.getPlayer().getWorld()
-                    .getBlockAt(state.blockX, state.blockY, state.blockZ).getType();
-            } catch (Exception e) {
-                /** Fallback to stone if world access fails — conservative default. */
-                state.blockType = Material.STONE;
-            }
+            // The world must not be touched from this thread. Ask the tick thread to resolve
+            // the block type; it is read back on FINISHED_DIGGING, by which point at least one
+            // tick has elapsed. Requesting every dig also keeps the queue warm for a cheat
+            // that sends START+FINISHED back to back within a single tick.
+            player.requestBlockType(state.blockX, state.blockY, state.blockZ);
+            captureTool(player, state,
+                    io.windfall.anticheat.WindfallPlugin.getInstance().getWindfallConfig().isFastBreakToolAware(),
+                    io.windfall.anticheat.WindfallPlugin.getInstance().getWindfallConfig().isFastBreakEfficiencyAware());
         } else if (action == DiggingAction.CANCELLED_DIGGING) {
             state.reset();
         } else if (action == DiggingAction.FINISHED_DIGGING) {
-            if (!state.breaking || state.blockType == null) {
+            if (!state.breaking) {
                 state.reset();
                 return;
             }
 
+            /** Read the tick-thread resolved type; fall back to stone if it never arrived. */
+            Material blockType = player.getResolvedBlockType(state.blockX, state.blockY, state.blockZ);
+            if (blockType == null) blockType = Material.STONE;
+
             long elapsed = System.currentTimeMillis() - state.breakStartTime;
-            double vanillaTime = getVanillaBreakTime(state.blockType);
-            /** Maximum allowed break time in milliseconds (vanilla * 0.85 tolerance). */
-            double maxAllowed = vanillaTime * MAX_FAST_BREAK_MULTIPLIER * 1000.0;
+            double vanillaTime = getVanillaBreakTime(blockType, state.toolType,
+                    state.efficiencyLevel, state.toolSpeed);
+            io.windfall.anticheat.core.config.WindfallConfig cfg = WindfallPlugin.getInstance().getWindfallConfig();
+            double maxAllowed = Math.max(cfg.getFastBreakMinimumCheckMs(),
+                    vanillaTime * 1000.0 * cfg.getFastBreakTimeMultiplier()) + cfg.getFastBreakNetworkGraceMs();
 
             if (elapsed < maxAllowed && vanillaTime > 0) {
-                increaseBuffer(player, 1.0);
-                if (getBuffer(player) > BUFFER_THRESHOLD) {
-                    flag(player);
+                increaseBuffer(player, cfg.getFastBreakBufferIncrease());
+                if (getBuffer(player) >= cfg.getFastBreakMinimumFlagBuffer()) {
+                    flag(player, "block=" + blockType
+                            + " tool=" + (state.toolType == null ? "HAND" : state.toolType)
+                            + " eff=" + state.efficiencyLevel
+                            + " expected=" + Math.round(vanillaTime * 1000.0) + "ms"
+                            + " maxAllowed=" + Math.round(maxAllowed) + "ms"
+                            + " actual=" + elapsed + "ms");
                     resetBuffer(player);
                 }
             } else {
-                decreaseBuffer(player, 1.0);
+                decreaseBuffer(player, cfg.getFastBreakBufferDecrease());
             }
             state.reset();
         }
@@ -142,17 +159,68 @@ public class FastBreakCheck extends Check implements PacketCheck {
      * @param material the block material to look up
      * @return vanilla break time in seconds
      */
-    private double getVanillaBreakTime(Material material) {
+    private double getVanillaBreakTime(Material material, Material toolType,
+                                       int efficiencyLevel, double toolSpeed) {
         String name = material.name();
-        if (name.equals("OBSIDIAN") || name.equals("END_PORTAL_FRAME")) return 50.0;
-        if (name.equals("ENCHANTING_TABLE") || name.equals("ANVIL")) return 5.0;
-        if (name.equals("IRON_ORE") || name.equals("DEEPSLATE_IRON_ORE")) return 3.0;
-        if (name.equals("DIAMOND_ORE") || name.equals("DEEPSLATE_DIAMOND_ORE")) return 5.0;
-        if (name.equals("EMERALD_ORE") || name.equals("DEEPSLATE_EMERALD_ORE")) return 5.0;
-        if (name.equals("STONE") || name.equals("COBBLESTONE") || name.equals("DEEPSLATE")) return 1.5;
-        if (name.equals("DIRT") || name.equals("GRASS_BLOCK") || name.equals("SAND")) return 0.5;
-        if (name.equals("WOOD") || name.contains("PLANKS") || name.contains("_LOG")) return 2.0;
-        if (material.isBlock() && material.isSolid()) return 1.0;
-        return 0.5;
+        double baseTime;
+        if (name.equals("OBSIDIAN") || name.equals("END_PORTAL_FRAME")) baseTime = 50.0;
+        else if (name.equals("ENCHANTING_TABLE") || name.equals("ANVIL")) baseTime = 5.0;
+        else if (name.contains("IRON_ORE")) baseTime = 3.0;
+        else if (name.contains("DIAMOND_ORE") || name.contains("EMERALD_ORE")) baseTime = 5.0;
+        else if (name.equals("STONE") || name.equals("COBBLESTONE") || name.equals("DEEPSLATE")) baseTime = 1.5;
+        else if (name.equals("DIRT") || name.equals("GRASS_BLOCK") || name.equals("SAND")) baseTime = 0.5;
+        else if (name.contains("PLANKS") || name.contains("_LOG")) baseTime = 2.0;
+        else if (material.isBlock() && material.isSolid()) baseTime = 1.0;
+        else baseTime = 0.5;
+
+        double override = io.windfall.anticheat.WindfallPlugin.getInstance()
+                .getWindfallConfig().getFastBreakBlockTimeOverride(name);
+        if (override > 0.0) {
+            baseTime = override;
+        }
+
+        if (!isCorrectTool(name, toolType)) {
+            return baseTime;
+        }
+        double speed = toolSpeed + efficiencyLevel * efficiencyLevel + 1.0;
+        return Math.max(0.05, baseTime * 8.0 / speed);
+    }
+
+    private static boolean isCorrectTool(String blockName, Material toolType) {
+        if (toolType == null) return false;
+        String tool = toolType.name();
+        if (blockName.contains("ORE") || blockName.equals("STONE")
+                || blockName.equals("COBBLESTONE") || blockName.equals("DEEPSLATE")
+                || blockName.equals("OBSIDIAN") || blockName.equals("END_PORTAL_FRAME")) {
+            return tool.contains("PICKAXE");
+        }
+        if (blockName.equals("DIRT") || blockName.equals("SAND") || blockName.equals("GRAVEL")
+                || blockName.equals("CLAY") || blockName.equals("SOUL_SAND")
+                || blockName.equals("SOUL_SOIL")) {
+            return tool.contains("SHOVEL");
+        }
+        if (blockName.contains("PLANKS") || blockName.contains("_LOG")
+                || blockName.contains("WOOD") || blockName.equals("BOOKSHELF")) {
+            return tool.contains("AXE");
+        }
+        if (blockName.contains("LEAVES") || blockName.contains("WHEAT")
+                || blockName.contains("CROPS") || blockName.equals("GRASS_BLOCK")) {
+            return tool.contains("HOE") || tool.contains("SHEARS");
+        }
+        return toolSpeedApplicable(tool);
+    }
+
+    private static boolean toolSpeedApplicable(String tool) {
+        return tool.contains("PICKAXE") || tool.contains("AXE") || tool.contains("SHOVEL")
+                || tool.contains("HOE") || tool.contains("SHEARS");
+    }
+
+    private void captureTool(WindfallPlayer player, PlayerState state,
+                             boolean toolAware, boolean efficiencyAware) {
+        // Read the main-thread snapshot instead of touching the Bukkit inventory from
+        // the Netty packet thread. Refreshed once per tick by WindfallPlayer#updateCachedState.
+        state.toolType = toolAware ? player.getCachedToolType() : null;
+        state.efficiencyLevel = efficiencyAware ? player.getCachedEfficiencyLevel() : 0;
+        state.toolSpeed = toolAware ? player.getCachedToolSpeed() : 8.0;
     }
 }

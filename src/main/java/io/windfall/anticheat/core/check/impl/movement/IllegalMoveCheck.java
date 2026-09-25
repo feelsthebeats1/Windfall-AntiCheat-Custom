@@ -71,8 +71,6 @@ public class IllegalMoveCheck extends Check implements PacketCheck {
 
         detectTeleport(player, state, ctx, horizontalSpeed, verticalDelta, flying);
         detectVerticalClip(player, state, ctx, onGround, climbing);
-
-        reward(player);
     }
 
     private void detectTeleport(WindfallPlayer player, PlayerState state, PredictionContext ctx,
